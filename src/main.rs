@@ -102,7 +102,6 @@ async fn create_bin(
 ) -> Json<CreateBinResponse> {
     let key = Aes128Gcm::generate_key(OsRng);
     let cipher = Aes128Gcm::new(&key);
-    cipher.
 
     let nonce = Aes128Gcm::generate_nonce(OsRng);
     let ciphertext = cipher.encrypt(&nonce, req.content.as_bytes()).unwrap();
@@ -113,7 +112,6 @@ async fn create_bin(
     let edit_token_b58 = id_to_b58(rand::random::<u64>());
 
     info!("Creating bin with id {}", id_b58);
-    info!("Encrypted content: {:?}", ciphertext);
 
     let bin = DbBin {
         id: id_b58.clone(),
