@@ -2,7 +2,7 @@ mod encrypt;
 mod mongodb_client;
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
+    aead::{generic_array::GenericArray, Aead, KeyInit},
     Aes128Gcm, // Or `Aes128Gcm`
     Nonce,
 };
@@ -143,12 +143,16 @@ async fn get_bin(
     let key = bs58::decode(key).into_vec().unwrap();
     let nonce = bs58::decode(nonce).into_vec().unwrap();
 
-    let cipher = Aes128Gcm::new_from_slice(key.as_slice()).unwrap();
-    let nonce = Nonce::from_slice(&nonce);
+    let plaintext = state
+        .encrypter
+        .decrypt(
+            *GenericArray::from_slice(&key),
+            *GenericArray::from_slice(&nonce),
+            &bin.content,
+        )
+        .unwrap();
 
-    let plaintext = cipher.decrypt(nonce, bin.content.as_slice()).unwrap();
-
-    String::from_utf8(plaintext).unwrap()
+    plaintext
 }
 
 #[debug_handler]

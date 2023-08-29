@@ -63,6 +63,6 @@ impl BinEncrypter for Aes128BinEncryption {
             .decrypt(&nonce, ciphertext)
             .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-        Ok(String::from_utf8(plaintext).unwrap())
+        Ok(String::from_utf8(plaintext).map_err(|_| StatusCode::BAD_REQUEST)?)
     }
 }
