@@ -1,24 +1,30 @@
+mod encrypt;
+mod mongodb_client;
+
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng},
-    Aes128Gcm,
-    Key, // Or `Aes128Gcm`
+    aead::{Aead, KeyInit},
+    Aes128Gcm, // Or `Aes128Gcm`
     Nonce,
 };
 use axum::{
+    debug_handler,
     extract::{Path, Query, State},
+    http::StatusCode,
     routing::{delete, get, post, put},
     Json, Router, Server,
 };
 use bson::doc;
+use encrypt::{Aes128BinEncryption, BinEncrypter};
+use mongodb_client::{DbClient, MongoDbClient};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::trace::{self, TraceLayer};
 use tracing::{info, Level};
 
 // Create AppState with mongodb client
-#[derive(Debug)]
 struct AppState {
-    database: mongodb::Database,
+    db_client: Box<dyn DbClient + Send + Sync>,
+    encrypter: Box<dyn BinEncrypter + Send + Sync>,
 }
 
 /// A bin stored in MongoDB
@@ -54,17 +60,22 @@ async fn main() {
     let mongo_uri = "mongodb://admin:password@localhost:27017";
 
     // connect to mongodb through MONGO_URI env var
-    let database = mongodb::Client::with_uri_str(mongo_uri)
-        .await
-        .unwrap()
-        .database("bin");
+    let db_client = MongoDbClient::new(
+        mongodb::Client::with_uri_str(mongo_uri)
+            .await
+            .unwrap()
+            .database("bin"),
+    );
 
     // create app state
-    let app_state = Arc::new(AppState { database });
+    let app_state = Arc::new(AppState {
+        db_client: Box::new(db_client),
+        encrypter: Box::new(Aes128BinEncryption),
+    });
 
     let app = Router::new()
         .route("/api/create", put(create_bin))
-        .route("/api/get/:id", get(get_bin))
+        .route("/api/get/:id/:key/:nonce", get(get_bin))
         .route("/api/delete/:id/:edit_token", delete(delete_bin))
         .route("/api/update/:id/:edit_token", post(update_bin))
         .layer(
@@ -79,73 +90,93 @@ async fn main() {
         .await
         .unwrap();
 
-    // For testing, use these curl commands:
+    // Curl commands for testing:
     // curl -X PUT -d '{"content":"hello world"}' localhost:3000/api/create
-    // curl -X GET localhost:3000/api/get?id=123
 }
 
 fn id_to_b58(x: u64) -> String {
     bs58::encode(x.to_be_bytes()).into_string()
 }
 
-fn b58_to_id(x: String) -> Option<u64> {
-    bs58::decode(x).into_vec().ok().map(|x| {
-        let mut bytes = [0; 8];
-        bytes.copy_from_slice(&x);
-        u64::from_be_bytes(bytes)
-    })
-}
-
+#[debug_handler]
 async fn create_bin(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateBinRequest>,
 ) -> Json<CreateBinResponse> {
-    let key = Aes128Gcm::generate_key(OsRng);
-    let cipher = Aes128Gcm::new(&key);
+    let (key, nonce, ciphertext) = state
+        .encrypter
+        .generate_key_and_encrypt(&req.content)
+        .unwrap();
+    let id = id_to_b58(rand::random::<u64>());
+    let edit_token = id_to_b58(rand::random::<u64>());
 
-    let nonce = Aes128Gcm::generate_nonce(OsRng);
-    let ciphertext = cipher.encrypt(&nonce, req.content.as_bytes()).unwrap();
-
-    let coll = state.database.collection::<DbBin>("bin");
-
-    let id_b58 = id_to_b58(rand::random::<u64>());
-    let edit_token_b58 = id_to_b58(rand::random::<u64>());
-
-    info!("Creating bin with id {}", id_b58);
+    info!(
+        "Creating bin {id} - {ct_len}",
+        id = id,
+        ct_len = ciphertext.len()
+    );
 
     let bin = DbBin {
-        id: id_b58.clone(),
+        id: id.clone(),
         content: ciphertext,
-        edit_token: edit_token_b58.clone(),
+        edit_token: edit_token.clone(),
     };
 
-    coll.insert_one(bin, None).await.unwrap();
+    state.db_client.create_bin(bin).await.unwrap();
 
     Json(CreateBinResponse {
-        id: id_b58,
+        id,
         key: bs58::encode(key).into_string(),
         nonce: bs58::encode(nonce).into_string(),
-        edit_token: edit_token_b58,
+        edit_token,
     })
 }
 
-async fn get_bin(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> String {
-    "dick".to_string()
+async fn get_bin(
+    State(state): State<Arc<AppState>>,
+    Path((id, key, nonce)): Path<(String, String, String)>,
+) -> String {
+    info!("Getting bin {}", id);
+
+    let bin = state.db_client.get_bin(&id).await.unwrap();
+
+    let key = bs58::decode(key).into_vec().unwrap();
+    let nonce = bs58::decode(nonce).into_vec().unwrap();
+
+    let cipher = Aes128Gcm::new_from_slice(key.as_slice()).unwrap();
+    let nonce = Nonce::from_slice(&nonce);
+
+    let plaintext = cipher.decrypt(nonce, bin.content.as_slice()).unwrap();
+
+    String::from_utf8(plaintext).unwrap()
+}
+
+#[debug_handler]
+async fn update_bin(
+    State(state): State<Arc<AppState>>,
+    Query((id, edit_token)): Query<(String, String)>,
+    Json(req): Json<CreateBinRequest>,
+) -> Result<Json<CreateBinResponse>, StatusCode> {
+    info!("Updating bin {}", id);
+
+    let bin = state.db_client.get_bin(&id).await.unwrap();
+
+    if bin.edit_token != edit_token {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let (key, nonce, ciphertext) = state
+        .encrypter
+        .generate_key_and_encrypt(&req.content)
+        .unwrap();
+
+    state.db_client.update_bin(&id, ciphertext).await.unwrap();
+
+    Ok(Json(CreateBinResponse {
+        id,
+        key: bs58::encode(key).into_string(),
+        nonce: bs58::encode(nonce).into_string(),
+        edit_token,
+    }))
 }
 async fn delete_bin() {}
-async fn update_bin() {}
-
-#[cfg(test)]
-mod tests {
-    // test the id stuff
-    use super::*;
-
-    #[test]
-    fn id_b58_conversion() {
-        for n in 0..100 {
-            let x = rand::random::<u64>();
-            assert_eq!(b58_to_id(id_to_b58(x)).unwrap(), x);
-            assert_eq!(b58_to_id(id_to_b58(n)).unwrap(), n);
-        }
-    }
-}
