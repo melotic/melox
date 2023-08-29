@@ -161,11 +161,12 @@ async fn update_bin(
     Query((id, edit_token)): Query<(String, String)>,
     Json(req): Json<CreateBinRequest>,
 ) -> Result<Json<CreateBinResponse>, StatusCode> {
-    info!("Updating bin {}", id);
+    info!("Updating bin {id}", id = id);
 
     let bin = state.db_client.get_bin(&id).await.unwrap();
 
     if bin.edit_token != edit_token {
+        info!("Invalid edit token {id}", id = id);
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -175,6 +176,7 @@ async fn update_bin(
         .unwrap();
 
     state.db_client.update_bin(&id, ciphertext).await.unwrap();
+    info!("Updated bin {id}", id = id);
 
     Ok(Json(CreateBinResponse {
         id,
@@ -193,6 +195,7 @@ async fn delete_bin(
     let bin = state.db_client.get_bin(&id).await.unwrap();
 
     if bin.edit_token != edit_token {
+        info!("Invalid edit token {id}", id = id);
         return Err(StatusCode::UNAUTHORIZED);
     }
 
