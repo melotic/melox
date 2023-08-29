@@ -183,4 +183,20 @@ async fn update_bin(
         edit_token,
     }))
 }
-async fn delete_bin() {}
+
+async fn delete_bin(
+    State(state): State<Arc<AppState>>,
+    Path((id, edit_token)): Path<(String, String)>,
+) -> Result<String, StatusCode> {
+    info!("Deleting bin {}", id);
+
+    let bin = state.db_client.get_bin(&id).await.unwrap();
+
+    if bin.edit_token != edit_token {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    state.db_client.delete_bin(&id).await.unwrap();
+
+    Ok("".to_string())
+}
