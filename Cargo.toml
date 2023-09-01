@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 aes-gcm = "0.10.2"
+anyhow = "1.0.75"
 async-trait = "0.1.73"
 axum = { version = "0.6.20", features = ["http2", "macros"] }
 bs58 = "0.5.0"
@@ -14,6 +15,7 @@ bson = "2.6.1"
 mongodb = "2.6.1"
 rand = "0.8.5"
 serde = { version = "1.0.185", features = ["derive"] }
+serde_json = "1.0.105"
 tokio = { version = "1.32.0", features = ["full"] }
 tower = "0.4.13"
 tower-http = { version = "0.4.3", features = ["trace"] }

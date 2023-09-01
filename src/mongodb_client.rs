@@ -1,14 +1,14 @@
-use crate::DbBin;
+use crate::{app_error::AppError, DbBin};
+use anyhow::anyhow;
 use async_trait::async_trait;
-use axum::http::StatusCode;
 use bson::{doc, Binary, Bson};
 
 #[async_trait]
 pub trait DbClient {
-    async fn create_bin(&self, bin: DbBin) -> Result<(), StatusCode>;
-    async fn get_bin(&self, id: &str) -> Result<DbBin, StatusCode>;
-    async fn update_bin(&self, id: &str, content: Vec<u8>) -> Result<(), StatusCode>;
-    async fn delete_bin(&self, id: &str) -> Result<(), StatusCode>;
+    async fn create_bin(&self, bin: DbBin) -> Result<(), AppError>;
+    async fn get_bin(&self, id: &str) -> Result<DbBin, AppError>;
+    async fn update_bin(&self, id: &str, content: Vec<u8>) -> Result<(), AppError>;
+    async fn delete_bin(&self, id: &str) -> Result<(), AppError>;
 }
 
 pub struct MongoDbClient {
@@ -23,26 +23,25 @@ impl MongoDbClient {
 
 #[async_trait]
 impl DbClient for MongoDbClient {
-    async fn create_bin(&self, bin: DbBin) -> Result<(), StatusCode> {
+    async fn create_bin(&self, bin: DbBin) -> Result<(), AppError> {
         let coll = self.database.collection::<DbBin>("bin");
-        coll.insert_one(bin, None)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        coll.insert_one(bin, None).await.map_err(|e| anyhow!(e))?;
+
         Ok(())
     }
 
-    async fn get_bin(&self, id: &str) -> Result<DbBin, StatusCode> {
+    async fn get_bin(&self, id: &str) -> Result<DbBin, AppError> {
         let coll = self.database.collection::<DbBin>("bin");
         let filter = doc! { "id": id };
         let bin = coll
             .find_one(filter, None)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .ok_or(StatusCode::NOT_FOUND)?;
+            .map_err(|e| anyhow!(e))?
+            .ok_or(AppError::BinNotFound)?;
         Ok(bin)
     }
 
-    async fn update_bin(&self, id: &str, content: Vec<u8>) -> Result<(), StatusCode> {
+    async fn update_bin(&self, id: &str, content: Vec<u8>) -> Result<(), AppError> {
         let coll = self.database.collection::<DbBin>("bin");
 
         let content = Bson::Binary(Binary {
@@ -56,16 +55,17 @@ impl DbClient for MongoDbClient {
             None,
         )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| anyhow!(e))?;
 
         Ok(())
     }
 
-    async fn delete_bin(&self, id: &str) -> Result<(), StatusCode> {
+    async fn delete_bin(&self, id: &str) -> Result<(), AppError> {
         let coll = self.database.collection::<DbBin>("bin");
         coll.delete_one(doc! { "id": id }, None)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| anyhow!(e))?;
+
         Ok(())
     }
 }
