@@ -1,54 +1,21 @@
 mod app_error;
+mod commands;
+mod database;
 mod encrypt;
-mod mongodb_client;
+pub mod models;
 
-use aes_gcm::aead::generic_array::GenericArray;
-use axum::{
-    debug_handler,
-    extract::{Path, Query, State},
-    routing::{delete, get, post, put},
-    Json, Router, Server,
-};
-use bson::doc;
-use encrypt::{Aes128BinEncryption, BinEncrypter};
-use mongodb_client::{DbClient, MongoDbClient};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+use crate::database::mongodb::MongoDbClient;
+use axum::{
+    routing::{delete, get, post, put},
+    Router, Server,
+};
+use commands::*;
+use encrypt::Aes128BinEncryption;
+use models::AppState;
 use tower_http::trace::{self, TraceLayer};
-use tracing::{info, Level};
-
-use crate::app_error::AppError;
-
-// Create AppState with mongodb client
-struct AppState {
-    db_client: Box<dyn DbClient + Send + Sync>,
-    encrypter: Box<dyn BinEncrypter + Send + Sync>,
-}
-
-/// A bin stored in MongoDB
-#[derive(Serialize, Deserialize)]
-pub struct DbBin {
-    /// A cryptographically secure random id.
-    id: String,
-    /// The content of the bin.
-    content: Vec<u8>,
-
-    // Required to update/delete this bin
-    edit_token: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CreateBinRequest {
-    content: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CreateBinResponse {
-    id: String,
-    key: String,
-    nonce: String,
-    edit_token: String,
-}
+use tracing::Level;
 
 #[tokio::main]
 async fn main() {
@@ -90,112 +57,4 @@ async fn main() {
 
     // Curl commands for testing:
     // curl -X PUT -d '{"content":"hello world"}' localhost:3000/api/create
-}
-
-fn id_to_b58(x: u64) -> String {
-    bs58::encode(x.to_be_bytes()).into_string()
-}
-
-#[debug_handler]
-async fn create_bin(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateBinRequest>,
-) -> Result<Json<CreateBinResponse>, AppError> {
-    let (key, nonce, ciphertext) = state.encrypter.generate_key_and_encrypt(&req.content)?;
-
-    let id = id_to_b58(rand::random::<u64>());
-    let edit_token = id_to_b58(rand::random::<u64>());
-
-    info!(
-        "Creating bin {id} - {ct_len}",
-        id = id,
-        ct_len = ciphertext.len()
-    );
-
-    let bin = DbBin {
-        id: id.clone(),
-        content: ciphertext,
-        edit_token: edit_token.clone(),
-    };
-
-    state.db_client.create_bin(bin).await?;
-
-    Ok(Json(CreateBinResponse {
-        id,
-        key: bs58::encode(key).into_string(),
-        nonce: bs58::encode(nonce).into_string(),
-        edit_token,
-    }))
-}
-
-async fn get_bin(
-    State(state): State<Arc<AppState>>,
-    Path((id, key, nonce)): Path<(String, String, String)>,
-) -> String {
-    info!("Getting bin {}", id);
-
-    let bin = state.db_client.get_bin(&id).await.unwrap();
-
-    let key = bs58::decode(key).into_vec().unwrap();
-    let nonce = bs58::decode(nonce).into_vec().unwrap();
-
-    let plaintext = state
-        .encrypter
-        .decrypt(
-            *GenericArray::from_slice(&key),
-            *GenericArray::from_slice(&nonce),
-            &bin.content,
-        )
-        .unwrap();
-
-    plaintext
-}
-
-#[debug_handler]
-async fn update_bin(
-    State(state): State<Arc<AppState>>,
-    Query((id, edit_token)): Query<(String, String)>,
-    Json(req): Json<CreateBinRequest>,
-) -> Result<Json<CreateBinResponse>, AppError> {
-    info!("Updating bin {id}", id = id);
-
-    let bin = state.db_client.get_bin(&id).await.unwrap();
-
-    if bin.edit_token != edit_token {
-        info!("Invalid edit token {id}", id = id);
-        return Err(AppError::InvalidEditToken);
-    }
-
-    let (key, nonce, ciphertext) = state
-        .encrypter
-        .generate_key_and_encrypt(&req.content)
-        .unwrap();
-
-    state.db_client.update_bin(&id, ciphertext).await.unwrap();
-    info!("Updated bin {id}", id = id);
-
-    Ok(Json(CreateBinResponse {
-        id,
-        key: bs58::encode(key).into_string(),
-        nonce: bs58::encode(nonce).into_string(),
-        edit_token,
-    }))
-}
-
-async fn delete_bin(
-    State(state): State<Arc<AppState>>,
-    Path((id, edit_token)): Path<(String, String)>,
-) -> Result<String, AppError> {
-    info!("Deleting bin {}", id);
-
-    let bin = state.db_client.get_bin(&id).await.unwrap();
-
-    if bin.edit_token != edit_token {
-        info!("Invalid edit token {id}", id = id);
-        return Err(AppError::InvalidEditToken);
-    }
-
-    state.db_client.delete_bin(&id).await.unwrap();
-
-    Ok("".to_string())
 }
