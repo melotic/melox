@@ -11,7 +11,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router, Server,
 };
-use commands::*;
+use commands::bin::*;
 use encrypt::Aes128BinEncryption;
 use models::AppState;
 use tower_http::trace::{self, TraceLayer};
