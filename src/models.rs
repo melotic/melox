@@ -9,7 +9,7 @@ pub struct AppState {
 }
 
 /// A bin stored in MongoDB
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DbBin {
     /// A cryptographically secure random id.
     pub id: String,
